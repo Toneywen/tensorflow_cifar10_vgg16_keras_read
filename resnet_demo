@@ -1,0 +1,124 @@
+import tensorflow as tf
+import numpy as np
+import keras
+from keras.preprocessing.image import ImageDataGenerator
+from keras.datasets import cifar10
+
+# hyper-parameter
+Start_learning_rate = 0.01
+Momentum = 0.9
+Augmentation = False
+num_classes = 10
+frequency = 20
+divisor = 2
+Batch_size = 32
+
+
+class ResNet:
+    def __init__(self):
+        self.output_graph = True
+        self.weight_decay = 0.0001
+        self.sess = tf.Session()
+        self.x = tf.placeholder(tf.float32, [None, 32, 32, 3], name="x")
+        self.y_ = tf.placeholder(tf.float32, [None, 10], name="y_")
+        self.learning_rate = tf.placeholder(tf.float32, name="learning_rate")
+        self._build_net()
+        self.cross_entropy = tf.losses.softmax_cross_entropy(self.y_, self.predict, label_smoothing=0.1, reduction=tf.losses.Reduction.MEAN)
+        # self.l2 = self.weight_decay * tf.add_n([tf.nn.l2_loss(var) for var in tf.trainable_variables()])
+        self.l2 = tf.constant(0, dtype=tf.float32, name="const")
+        self.loss = self.cross_entropy + self.l2
+        self.pred = tf.argmax(self.predict, axis=1)
+        self.accuracy = tf.reduce_mean(tf.cast(tf.equal(self.pred, tf.argmax(self.y_, axis=1)), tf.float32))
+        self.train_op = tf.train.MomentumOptimizer(self.learning_rate, momentum=0.9).minimize(self.loss)
+
+        if self.output_graph:
+            tf.summary.FileWriter("logs/", self.sess.graph)
+        self.sess.run(tf.global_variables_initializer())
+
+    def _build_net(self):
+        with tf.name_scope("ResNet"):
+            with tf.name_scope("conv1"):
+                self.conv1_1 = tf.layers.conv2d(self.x, filters=32, kernel_size=3, padding="same",
+                                                activation=tf.nn.relu, name="conv1_1")
+                self.conv1_2 = tf.layers.conv2d(self.conv1_1, filters=32, kernel_size=3,
+                                                activation=tf.nn.relu, name="conv1_2")
+                self.pool_1 = tf.layers.max_pooling2d(self.conv1_2, 2, 2, name="pool_1")
+            with tf.name_scope("Block"):
+                self.conv2_1 = tf.layers.conv2d(self.pool_1, filters=64, kernel_size=3,
+                                                strides=1, activation=tf.nn.relu, padding="same", name="conv2_1")
+                self.conv2_2 = tf.layers.conv2d(self.conv2_1, filters=64, kernel_size=3, strides=1,
+                                                activation=tf.nn.relu, padding="same", name="conv2_2")
+
+                self.input_layer_reduce_2 = tf.layers.conv2d(self.pool_1, filters=64, kernel_size=3,
+                                                             strides=1, padding="same", name="input_2")
+                self.layer_output_2 = tf.add(self.conv2_2, self.input_layer_reduce_2)
+
+                # self.conv3_1 = tf.layers.conv2d(self.layer_output_2, filters=128, kernel_size=3, strides=2,
+                #                                 activation=tf.nn.relu, padding="same", name="conv3_1")
+                # self.conv3_2 = tf.layers.conv2d(self.conv3_1, filters=128, kernel_size=3, strides=1,
+                #                                 activation=tf.nn.relu, padding="same", name="conv3_2")
+                #
+                # self.input_layer_reduce_3 = tf.layers.conv2d(self.layer_output_2, filters=128, kernel_size=3, activation=tf.nn.relu,
+                #                                              strides=2, padding="same", name="input_3")
+                # self.layer_output_3 = self.conv3_2 + self.input_layer_reduce_3
+
+            with tf.name_scope("FC"):
+                self.flatten = tf.layers.flatten(self.layer_output_2, name="flatten")
+                self.fc = tf.layers.dense(self.flatten, 128, activation=tf.nn.relu, name="fc")
+                self.dropout = tf.layers.dropout(self.fc, rate=0.5, name="dropout")
+                self.predict = tf.layers.dense(self.dropout, 10, name="predict")
+
+    def _build_residual_block(self):
+        pass
+
+    def learn(self, x_batch, y_batch, learning_rate):
+        _, loss, accuracy, l2 = self.sess.run([self.train_op, self.loss, self.accuracy, self.l2], feed_dict={
+                                                self.x: x_batch, self.y_: y_batch, self.learning_rate: learning_rate})
+        return loss, accuracy, l2
+
+    def valid(self,x_batch, y_batch, learning_rate):
+        _, loss, accuracy = self.sess.run([self.loss, self.accuracy], feed_dict={
+            self.x: x_batch, self.y_: y_batch, self.learning_rate: learning_rate})
+        return loss, accuracy
+
+    def save_to_local(self):
+        pass
+
+    def restore(self):
+        pass
+
+
+def main():
+    normalization_mean = np.array([123.68, 116.779, 103.979]).reshape((1, 1, 1, 3))
+    (x_train, y_train), (x_test, y_test) = cifar10.load_data()
+    y_train = keras.utils.to_categorical(y_train, num_classes=10)
+    y_test = keras.utils.to_categorical(y_test, num_classes=10)
+    x_train = x_train - normalization_mean
+    train_gen = ImageDataGenerator().flow(x_train, y_train, batch_size=Batch_size)
+    test_gen = ImageDataGenerator().flow(x_test, y_test, batch_size=Batch_size)
+
+    res_net = ResNet()
+    epochs = 200
+    learning_rate = Start_learning_rate
+    for i in range(epochs):
+        train_acc = []
+        train_loss = []
+        print("epochs:", i)
+        if (i+1) % frequency == 0:
+            learning_rate /= divisor
+            print("learning_rate:", learning_rate)
+        for t in range(y_train.shape[0]//Batch_size):
+            x_batch, y_batch = train_gen.next()
+            loss, accuracy, l2 = res_net.learn(x_batch, y_batch, learning_rate)
+            print("loss:", loss)
+            # print("l2:", l2)
+            train_acc.append(accuracy)
+            train_loss.append(loss)
+
+        mean_acc = np.mean(train_acc)
+        mean_loss = np.mean(train_loss)
+        print("mean acc:", mean_acc, "mean loss:", mean_loss)
+
+if __name__=="__main__":
+    main()
+
